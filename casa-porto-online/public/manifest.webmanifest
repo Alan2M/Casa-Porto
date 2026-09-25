@@ -1,0 +1,9 @@
+{
+  "name": "Casa Porto - Gestão de Aluguel",
+  "short_name": "Casa Porto",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f4",
+  "theme_color": "#0b7667",
+  "description": "Gestão simples de reservas e financeiro da casa de temporada."
+}
