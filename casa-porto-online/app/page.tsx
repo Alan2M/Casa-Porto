@@ -215,8 +215,7 @@ export default function HomePage() {
         </header>
 
         {tab === "dashboard" && <Dashboard activeToday={activeToday} nextReservation={nextReservation} monthReceived={monthReceived} pendingTotal={pendingTotal} movements={movements} paymentByReservation={paymentByReservation} tasks={tasks} onReservation={openEditReservation} onStatus={quickStatus} />}
-        {tab === "calendar" && <CalendarView date={calendarDate} setDate={setCalendarDate} reservations={reservations} payments={paymentByReservation} onDay={(date) => openNewReservation({ check_in: date })} onReservation={openEditReservation} />}
-        {tab === "reservations" && <ReservationsView reservations={reservations} paymentByReservation={paymentByReservation} onEdit={openEditReservation} onPayment={setPaymentFor} />}
+        {tab === "calendar" && <CalendarView date={calendarDate} setDate={setCalendarDate} reservations={reservations} payments={paymentByReservation} onDay={(date: string) => openNewReservation({ check_in: date })} onReservation={openEditReservation} />}        {tab === "reservations" && <ReservationsView reservations={reservations} paymentByReservation={paymentByReservation} onEdit={openEditReservation} onPayment={setPaymentFor} />}
         {tab === "finance" && <FinanceView reservations={reservations} payments={payments} expenses={expenses} paymentByReservation={paymentByReservation} onPayment={setPaymentFor} onExpense={() => setExpenseModal(true)} />}
         {tab === "tasks" && <TasksView tasks={tasks} reservations={reservations} householdId={household.id} onReload={() => loadData(household.id)} onNew={() => setTaskModal(true)} notify={notify} />}
         {tab === "settings" && <SettingsView household={household} property={property} role={role} user={user} onReload={() => initialize(user!.id)} notify={notify} />}
