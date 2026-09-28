@@ -5,19 +5,20 @@ import { useRouter } from "next/navigation";
 import {
   ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpFromLine, BedDouble, CalendarDays,
   Check, CheckCircle2, ChevronLeft, ChevronRight, CircleDollarSign, ClipboardCheck,
-  Copy, CreditCard, DoorOpen, Edit3, Home, LogOut, Menu, MoreHorizontal, Plus,
-  ReceiptText, RefreshCw, Settings, Sparkles, Trash2, Users, Wallet, Waves, X
+  Copy, CreditCard, DoorOpen, Download, Edit3, FileText, Home, LogOut, Menu, MoreHorizontal, Plus,
+  Printer, ReceiptText, RefreshCw, Settings, Sparkles, Trash2, Users, Wallet, Waves, X, Clock3, CheckCheck, AlertTriangle
 } from "lucide-react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { formatDate, localISO, money, monthKey, nights, parseDate } from "@/lib/date";
 
-type Tab = "dashboard" | "calendar" | "reservations" | "finance" | "tasks" | "settings";
+type Tab = "dashboard" | "calendar" | "reservations" | "finance" | "reports" | "tasks" | "settings";
 type Household = { id: string; name: string; join_code: string; owner_user_id: string };
 type Property = { id: string; household_id: string; name: string; address: string | null; check_in_time: string; check_out_time: string };
 type Reservation = { id: string; household_id: string; property_id: string; guest_name: string; phone: string | null; check_in: string; check_out: string; guests: number; total_amount: number; source: string; status: string; notes: string | null; created_at: string };
 type Payment = { id: string; household_id: string; reservation_id: string; amount: number; paid_at: string; method: string; notes: string | null };
 type Expense = { id: string; household_id: string; amount: number; spent_at: string; category: string; description: string };
+type Payable = { id: string; household_id: string; amount: number; due_date: string; category: string; description: string; status: "open" | "paid"; paid_at: string | null; expense_id: string | null; created_at: string };
 type Task = { id: string; household_id: string; reservation_id: string | null; title: string; due_date: string; status: string; notes: string | null };
 
 type ReservationForm = {
@@ -46,6 +47,7 @@ export default function HomePage() {
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [payables, setPayables] = useState<Payable[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tab, setTab] = useState<Tab>("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -53,6 +55,7 @@ export default function HomePage() {
   const [reservationForm, setReservationForm] = useState<ReservationForm>(emptyReservation);
   const [paymentFor, setPaymentFor] = useState<Reservation | null>(null);
   const [expenseModal, setExpenseModal] = useState(false);
+  const [payableModal, setPayableModal] = useState(false);
   const [taskModal, setTaskModal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
@@ -82,17 +85,19 @@ export default function HomePage() {
   }
 
   async function loadData(householdId: string) {
-    const [p, r, pay, exp, task] = await Promise.all([
+    const [p, r, pay, exp, payable, task] = await Promise.all([
       supabase.from("properties").select("*").eq("household_id", householdId).limit(1).single(),
       supabase.from("reservations").select("*").eq("household_id", householdId).order("check_in"),
       supabase.from("payments").select("*").eq("household_id", householdId).order("paid_at", { ascending: false }),
       supabase.from("expenses").select("*").eq("household_id", householdId).order("spent_at", { ascending: false }),
+      supabase.from("payables").select("*").eq("household_id", householdId).order("due_date"),
       supabase.from("tasks").select("*").eq("household_id", householdId).order("due_date")
     ]);
     if (p.data) setProperty(p.data as Property);
     setReservations((r.data ?? []) as Reservation[]);
     setPayments((pay.data ?? []) as Payment[]);
     setExpenses((exp.data ?? []) as Expense[]);
+    setPayables((payable.data ?? []) as Payable[]);
     setTasks((task.data ?? []) as Task[]);
   }
 
@@ -121,6 +126,9 @@ export default function HomePage() {
   const monthReceived = payments.filter(p => monthKey(p.paid_at) === currentMonth).reduce((s,p) => s + Number(p.amount), 0);
   const pendingTotal = reservations.filter(r => !["canceled"].includes(r.status)).reduce((s,r) => s + Math.max(0, Number(r.total_amount) - (paymentByReservation.get(r.id) ?? 0)), 0);
   const openTasks = tasks.filter(t => t.status !== "done").length;
+  const openPayables = payables.filter(p => p.status === "open");
+  const payableTotal = openPayables.reduce((sum, p) => sum + Number(p.amount), 0);
+  const overduePayables = openPayables.filter(p => p.due_date < today).length;
 
   const movements = useMemo(() => {
     const rows: { date: string; type: "in"|"out"; reservation: Reservation }[] = [];
@@ -182,6 +190,26 @@ export default function HomePage() {
     await loadData(household.id); notify("Status atualizado.");
   }
 
+  async function markPayablePaid(payable: Payable) {
+    if (!household) return;
+    const paidAt = prompt("Data do pagamento (AAAA-MM-DD):", localISO());
+    if (!paidAt) return;
+    setBusy(true);
+    const { error } = await supabase.rpc("mark_payable_paid", { p_payable_id: payable.id, p_paid_at: paidAt });
+    if (error) notify(error.message);
+    else { await loadData(household.id); notify("Conta paga e despesa registrada."); }
+    setBusy(false);
+  }
+
+  async function deletePayable(payable: Payable) {
+    if (!household || !confirm(`Excluir a conta "${payable.description}"?`)) return;
+    setBusy(true);
+    const { error } = await supabase.from("payables").delete().eq("id", payable.id);
+    if (error) notify(error.message);
+    else { await loadData(household.id); notify("Conta excluída."); }
+    setBusy(false);
+  }
+
   if (loading) return <div className="loading-screen"><Waves size={35}/><strong>Casa Porto</strong><span>Carregando seu painel…</span></div>;
   if (!household) return <Setup user={user} onDone={() => user && initialize(user.id)} />;
 
@@ -190,6 +218,7 @@ export default function HomePage() {
     { id: "calendar", label: "Calendário", icon: CalendarDays },
     { id: "reservations", label: "Reservas", icon: BedDouble },
     { id: "finance", label: "Financeiro", icon: Wallet },
+    { id: "reports", label: "Relatórios", icon: FileText },
     { id: "tasks", label: "Operação", icon: ClipboardCheck },
     { id: "settings", label: "Ajustes", icon: Settings },
   ];
@@ -214,9 +243,11 @@ export default function HomePage() {
           <div className="top-actions"><button className="icon-btn" onClick={refresh} title="Atualizar"><RefreshCw className={busy ? "spin" : ""} size={19}/></button><button className="btn primary" onClick={() => openNewReservation()}><Plus size={18}/> Nova reserva</button></div>
         </header>
 
-        {tab === "dashboard" && <Dashboard activeToday={activeToday} nextReservation={nextReservation} monthReceived={monthReceived} pendingTotal={pendingTotal} movements={movements} paymentByReservation={paymentByReservation} tasks={tasks} onReservation={openEditReservation} onStatus={quickStatus} />}
-        {tab === "calendar" && <CalendarView date={calendarDate} setDate={setCalendarDate} reservations={reservations} payments={paymentByReservation} onDay={(date: string) => openNewReservation({ check_in: date })} onReservation={openEditReservation} />}        {tab === "reservations" && <ReservationsView reservations={reservations} paymentByReservation={paymentByReservation} onEdit={openEditReservation} onPayment={setPaymentFor} />}
-        {tab === "finance" && <FinanceView reservations={reservations} payments={payments} expenses={expenses} paymentByReservation={paymentByReservation} onPayment={setPaymentFor} onExpense={() => setExpenseModal(true)} />}
+        {tab === "dashboard" && <Dashboard activeToday={activeToday} nextReservation={nextReservation} monthReceived={monthReceived} pendingTotal={pendingTotal} payableTotal={payableTotal} overduePayables={overduePayables} movements={movements} paymentByReservation={paymentByReservation} tasks={tasks} onReservation={openEditReservation} onStatus={quickStatus} />}
+        {tab === "calendar" && <CalendarView date={calendarDate} setDate={setCalendarDate} reservations={reservations} payments={paymentByReservation} onDay={(date: string) => openNewReservation({ check_in: date })} onReservation={openEditReservation} />}
+        {tab === "reservations" && <ReservationsView reservations={reservations} paymentByReservation={paymentByReservation} onEdit={openEditReservation} onPayment={setPaymentFor} />}
+        {tab === "finance" && <FinanceView reservations={reservations} payments={payments} expenses={expenses} payables={payables} paymentByReservation={paymentByReservation} onPayment={setPaymentFor} onExpense={() => setExpenseModal(true)} onPayable={() => setPayableModal(true)} onPayPayable={markPayablePaid} onDeletePayable={deletePayable} />}
+        {tab === "reports" && <ReportsView property={property} reservations={reservations} payments={payments} expenses={expenses} payables={payables} paymentByReservation={paymentByReservation} notify={notify} />}
         {tab === "tasks" && <TasksView tasks={tasks} reservations={reservations} householdId={household.id} onReload={() => loadData(household.id)} onNew={() => setTaskModal(true)} notify={notify} />}
         {tab === "settings" && <SettingsView household={household} property={property} role={role} user={user} onReload={() => initialize(user!.id)} notify={notify} />}
       </main>
@@ -224,6 +255,7 @@ export default function HomePage() {
       {reservationModal && <ReservationModal form={reservationForm} setForm={setReservationForm} onClose={() => setReservationModal(false)} onSave={saveReservation} onDelete={reservationForm.id ? () => deleteReservation(reservationForm.id!) : undefined} busy={busy} paid={reservationForm.id ? paymentByReservation.get(reservationForm.id) ?? 0 : 0} />}
       {paymentFor && <PaymentModal reservation={paymentFor} paid={paymentByReservation.get(paymentFor.id) ?? 0} householdId={household.id} onClose={() => setPaymentFor(null)} onDone={async () => { setPaymentFor(null); await loadData(household.id); notify("Pagamento registrado."); }} />}
       {expenseModal && <ExpenseModal householdId={household.id} onClose={() => setExpenseModal(false)} onDone={async () => { setExpenseModal(false); await loadData(household.id); notify("Despesa registrada."); }} />}
+      {payableModal && <PayableModal householdId={household.id} onClose={() => setPayableModal(false)} onDone={async () => { setPayableModal(false); await loadData(household.id); notify("Conta a pagar criada."); }} />}
       {taskModal && <TaskModal householdId={household.id} reservations={reservations} onClose={() => setTaskModal(false)} onDone={async () => { setTaskModal(false); await loadData(household.id); notify("Tarefa criada."); }} />}
       {toast && <div className="toast"><CheckCircle2 size={18}/>{toast}</div>}
     </div>
@@ -231,7 +263,7 @@ export default function HomePage() {
 }
 
 function tabTitle(tab: Tab) {
-  return ({ dashboard: "Visão geral", calendar: "Calendário", reservations: "Reservas", finance: "Financeiro", tasks: "Operação da casa", settings: "Configurações" } as Record<Tab,string>)[tab];
+  return ({ dashboard: "Visão geral", calendar: "Calendário", reservations: "Reservas", finance: "Financeiro", reports: "Relatórios", tasks: "Operação da casa", settings: "Configurações" } as Record<Tab,string>)[tab];
 }
 
 function Setup({ user, onDone }: { user: User | null; onDone: () => void }) {
@@ -263,7 +295,7 @@ function Setup({ user, onDone }: { user: User | null; onDone: () => void }) {
   </div></main>;
 }
 
-function Dashboard({ activeToday, nextReservation, monthReceived, pendingTotal, movements, paymentByReservation, tasks, onReservation, onStatus }: any) {
+function Dashboard({ activeToday, nextReservation, monthReceived, pendingTotal, payableTotal, overduePayables, movements, paymentByReservation, tasks, onReservation, onStatus }: any) {
   const nextTasks = tasks.filter((t: Task) => t.status !== "done").slice(0,4);
   return <div className="page-grid">
     <section className="hero-status">
@@ -273,6 +305,7 @@ function Dashboard({ activeToday, nextReservation, monthReceived, pendingTotal, 
     <section className="stats-grid">
       <Stat icon={CircleDollarSign} label="Recebido este mês" value={money(monthReceived)} note="Pagamentos registrados" />
       <Stat icon={CreditCard} label="Total a receber" value={money(pendingTotal)} note="Saldo das reservas" />
+      <Stat icon={Clock3} label="Contas a pagar" value={money(payableTotal)} note={overduePayables ? `${overduePayables} vencida(s)` : "Nenhuma conta vencida"} />
       <Stat icon={BedDouble} label="Próxima reserva" value={nextReservation ? formatDate(nextReservation.check_in) : "—"} note={nextReservation?.guest_name ?? "Sem reservas futuras"} />
       <Stat icon={ClipboardCheck} label="Tarefas abertas" value={String(tasks.filter((t: Task)=>t.status!=="done").length)} note="Limpeza e operação" />
     </section>
@@ -299,10 +332,165 @@ function ReservationsView({ reservations, paymentByReservation, onEdit, onPaymen
   return <section className="card"><div className="section-head responsive"><div><span className="eyebrow">HISTÓRICO E PRÓXIMAS</span><h2>Todas as reservas</h2></div><div className="filters">{[["all","Todas"],["future","Futuras"],["confirmed","Confirmadas"],["canceled","Canceladas"]].map(([v,l])=><button key={v} className={filter===v?"active":""} onClick={()=>setFilter(v)}>{l}</button>)}</div></div><div className="table-wrap"><table><thead><tr><th>Hóspede</th><th>Período</th><th>Status</th><th>Valor</th><th>Recebido</th><th>Saldo</th><th></th></tr></thead><tbody>{visible.map((r:Reservation)=>{const paid=paymentByReservation.get(r.id)??0;return <tr key={r.id}><td><strong>{r.guest_name}</strong><span>{r.guests} hóspedes · {r.source}</span></td><td><strong>{formatDate(r.check_in)}</strong><span>{nights(r.check_in,r.check_out)} noites → {formatDate(r.check_out)}</span></td><td><span className={`status-pill ${r.status}`}>{statusLabel[r.status]}</span></td><td>{money(r.total_amount)}</td><td>{money(paid)}</td><td><strong className={Number(r.total_amount)-paid>0?"warning-text":"success-text"}>{money(Math.max(0,Number(r.total_amount)-paid))}</strong></td><td><div className="row-actions"><button className="icon-btn small" onClick={()=>onPayment(r)} title="Registrar pagamento"><CreditCard size={16}/></button><button className="icon-btn small" onClick={()=>onEdit(r)}><Edit3 size={16}/></button></div></td></tr>})}</tbody></table>{!visible.length&&<Empty text="Nenhuma reserva neste filtro."/>}</div></section>;
 }
 
-function FinanceView({ reservations, payments, expenses, paymentByReservation, onPayment, onExpense }: any) {
-  const received=payments.reduce((s:number,p:Payment)=>s+Number(p.amount),0); const spent=expenses.reduce((s:number,e:Expense)=>s+Number(e.amount),0); const booked=reservations.filter((r:Reservation)=>r.status!=="canceled").reduce((s:number,r:Reservation)=>s+Number(r.total_amount),0); const pending=Math.max(0,booked-received);
-  return <div className="finance-grid"><section className="stats-grid span-all"><Stat icon={ReceiptText} label="Valor contratado" value={money(booked)} note="Reservas não canceladas"/><Stat icon={CircleDollarSign} label="Total recebido" value={money(received)} note="Todos os pagamentos"/><Stat icon={CreditCard} label="A receber" value={money(pending)} note="Saldo das reservas"/><Stat icon={Wallet} label="Resultado" value={money(received-spent)} note={`${money(spent)} em despesas`}/></section><section className="card"><div className="section-head"><div><span className="eyebrow">ENTRADAS</span><h3>Pagamentos recentes</h3></div></div><div className="transaction-list">{payments.slice(0,12).map((p:Payment)=>{const r=reservations.find((x:Reservation)=>x.id===p.reservation_id);return <div key={p.id}><div className="transaction-icon income"><ArrowDownToLine size={18}/></div><div><strong>{r?.guest_name??"Reserva"}</strong><span>{formatDate(p.paid_at)} · {p.method}</span></div><strong>{money(p.amount)}</strong></div>})}{!payments.length&&<Empty text="Nenhum pagamento registrado."/>}</div></section><section className="card"><div className="section-head"><div><span className="eyebrow">SAÍDAS</span><h3>Despesas</h3></div><button className="btn soft" onClick={onExpense}><Plus size={16}/> Despesa</button></div><div className="transaction-list">{expenses.slice(0,12).map((e:Expense)=><div key={e.id}><div className="transaction-icon expense"><ArrowUpFromLine size={18}/></div><div><strong>{e.description}</strong><span>{formatDate(e.spent_at)} · {e.category}</span></div><strong>{money(e.amount)}</strong></div>)}{!expenses.length&&<Empty text="Nenhuma despesa registrada."/>}</div></section><section className="card span-all"><div className="section-head"><div><span className="eyebrow">SALDOS</span><h3>Reservas com valor pendente</h3></div></div><div className="balance-grid">{reservations.filter((r:Reservation)=>r.status!=="canceled"&&Number(r.total_amount)-(paymentByReservation.get(r.id)??0)>0).map((r:Reservation)=><button key={r.id} onClick={()=>onPayment(r)}><div><strong>{r.guest_name}</strong><span>{formatDate(r.check_in)} · {r.source}</span></div><div><span>Falta receber</span><strong>{money(Number(r.total_amount)-(paymentByReservation.get(r.id)??0))}</strong></div></button>)}</div></section></div>;
+function FinanceView({ reservations, payments, expenses, payables, paymentByReservation, onPayment, onExpense, onPayable, onPayPayable, onDeletePayable }: any) {
+  const received=payments.reduce((s:number,p:Payment)=>s+Number(p.amount),0);
+  const spent=expenses.reduce((s:number,e:Expense)=>s+Number(e.amount),0);
+  const booked=reservations.filter((r:Reservation)=>r.status!=="canceled").reduce((s:number,r:Reservation)=>s+Number(r.total_amount),0);
+  const pending=Math.max(0,booked-received);
+  const openPayables=(payables as Payable[]).filter(p=>p.status==="open");
+  const payableTotal=openPayables.reduce((s:number,p:Payable)=>s+Number(p.amount),0);
+  const overdue=openPayables.filter(p=>p.due_date<localISO()).length;
+
+  return <div className="finance-grid">
+    <section className="stats-grid span-all">
+      <Stat icon={ReceiptText} label="Valor contratado" value={money(booked)} note="Reservas não canceladas"/>
+      <Stat icon={CircleDollarSign} label="Total recebido" value={money(received)} note="Todos os pagamentos"/>
+      <Stat icon={CreditCard} label="A receber" value={money(pending)} note="Saldo das reservas"/>
+      <Stat icon={Clock3} label="Contas a pagar" value={money(payableTotal)} note={overdue?`${overdue} vencida(s)`:"Nenhuma vencida"}/>
+      <Stat icon={Wallet} label="Resultado" value={money(received-spent)} note={`${money(spent)} em despesas`}/>
+    </section>
+
+    <section className="card">
+      <div className="section-head"><div><span className="eyebrow">ENTRADAS</span><h3>Pagamentos recentes</h3></div></div>
+      <div className="transaction-list">{payments.slice(0,12).map((p:Payment)=>{const r=reservations.find((x:Reservation)=>x.id===p.reservation_id);return <div key={p.id}><div className="transaction-icon income"><ArrowDownToLine size={18}/></div><div><strong>{r?.guest_name??"Reserva"}</strong><span>{formatDate(p.paid_at)} · {p.method}</span></div><strong>{money(p.amount)}</strong></div>})}{!payments.length&&<Empty text="Nenhum pagamento registrado."/>}</div>
+    </section>
+
+    <section className="card">
+      <div className="section-head"><div><span className="eyebrow">SAÍDAS PAGAS</span><h3>Despesas</h3></div><button className="btn soft" onClick={onExpense}><Plus size={16}/> Despesa</button></div>
+      <div className="transaction-list">{expenses.slice(0,12).map((e:Expense)=><div key={e.id}><div className="transaction-icon expense"><ArrowUpFromLine size={18}/></div><div><strong>{e.description}</strong><span>{formatDate(e.spent_at)} · {e.category}</span></div><strong>{money(e.amount)}</strong></div>)}{!expenses.length&&<Empty text="Nenhuma despesa registrada."/>}</div>
+    </section>
+
+    <section className="card span-all payable-card">
+      <div className="section-head responsive"><div><span className="eyebrow">CONTAS A PAGAR</span><h3>Próximos vencimentos</h3><p className="muted">Cadastre energia, água, internet, condomínio, manutenção e outras despesas antes do pagamento.</p></div><button className="btn primary" onClick={onPayable}><Plus size={16}/> Nova conta</button></div>
+      <div className="payable-list">
+        {openPayables.map((p:Payable)=>{
+          const late=p.due_date<localISO();
+          const dueToday=p.due_date===localISO();
+          return <div key={p.id} className={`payable-row ${late?"late":""}`}>
+            <div className={`payable-icon ${late?"late":""}`}>{late?<AlertTriangle size={18}/>:<Clock3 size={18}/>}</div>
+            <div className="payable-main"><strong>{p.description}</strong><span>{p.category} · vence {formatDate(p.due_date)} · {late?"Vencida":dueToday?"Vence hoje":relativeDate(p.due_date)}</span></div>
+            <strong className="payable-value">{money(p.amount)}</strong>
+            <div className="payable-actions"><button className="btn soft mini" onClick={()=>onPayPayable(p)}><CheckCheck size={15}/> Pagar</button><button className="icon-btn danger-icon" title="Excluir" onClick={()=>onDeletePayable(p)}><Trash2 size={15}/></button></div>
+          </div>
+        })}
+        {!openPayables.length&&<Empty text="Nenhuma conta pendente. Tudo em dia!" icon={CheckCircle2}/>}
+      </div>
+      {!!payables.filter((p:Payable)=>p.status==="paid").length&&<details className="paid-payables"><summary>Ver contas pagas ({payables.filter((p:Payable)=>p.status==="paid").length})</summary><div className="payable-list">{payables.filter((p:Payable)=>p.status==="paid").slice(0,10).map((p:Payable)=><div key={p.id} className="payable-row paid"><div className="payable-icon paid"><Check size={18}/></div><div className="payable-main"><strong>{p.description}</strong><span>{p.category} · paga em {p.paid_at?formatDate(p.paid_at):"—"}</span></div><strong className="payable-value">{money(p.amount)}</strong></div>)}</div></details>}
+    </section>
+
+    <section className="card span-all"><div className="section-head"><div><span className="eyebrow">SALDOS</span><h3>Reservas com valor pendente</h3></div></div><div className="balance-grid">{reservations.filter((r:Reservation)=>r.status!=="canceled"&&Number(r.total_amount)-(paymentByReservation.get(r.id)??0)>0).map((r:Reservation)=><button key={r.id} onClick={()=>onPayment(r)}><div><strong>{r.guest_name}</strong><span>{formatDate(r.check_in)} · {r.source}</span></div><div><span>Falta receber</span><strong>{money(Number(r.total_amount)-(paymentByReservation.get(r.id)??0))}</strong></div></button>)}</div></section>
+  </div>;
 }
+
+function ReportsView({ property, reservations, payments, expenses, payables, paymentByReservation, notify }: any) {
+  const [month, setMonth] = useState(localISO().slice(0, 7));
+  const [reportKind, setReportKind] = useState<"financial" | "occupancy">("financial");
+
+  const period = useMemo(() => {
+    const [year, monthNumber] = month.split("-").map(Number);
+    const start = `${month}-01`;
+    const nextDate = new Date(year, monthNumber, 1);
+    const next = localISO(nextDate);
+    const days = new Date(year, monthNumber, 0).getDate();
+    return { start, next, days, label: new Intl.DateTimeFormat("pt-BR", { month: "long", year: "numeric" }).format(new Date(year, monthNumber - 1, 1)) };
+  }, [month]);
+
+  const monthReservations = useMemo(() => reservations.filter((r: Reservation) => r.status !== "canceled" && r.check_in < period.next && r.check_out > period.start), [reservations, period]);
+  const arrivals = useMemo(() => reservations.filter((r: Reservation) => r.status !== "canceled" && monthKey(r.check_in) === month), [reservations, month]);
+  const monthPayments = useMemo(() => payments.filter((p: Payment) => monthKey(p.paid_at) === month), [payments, month]);
+  const monthExpenses = useMemo(() => expenses.filter((e: Expense) => monthKey(e.spent_at) === month), [expenses, month]);
+  const monthPayables = useMemo(() => (payables as Payable[]).filter((p: Payable) => monthKey(p.due_date) === month), [payables, month]);
+
+  const received = monthPayments.reduce((sum: number, p: Payment) => sum + Number(p.amount), 0);
+  const spent = monthExpenses.reduce((sum: number, e: Expense) => sum + Number(e.amount), 0);
+  const openPayablesAmount = monthPayables.filter((p:Payable)=>p.status==="open").reduce((sum:number,p:Payable)=>sum+Number(p.amount),0);
+  const contracted = arrivals.reduce((sum: number, r: Reservation) => sum + Number(r.total_amount), 0);
+  const pending = arrivals.reduce((sum: number, r: Reservation) => sum + Math.max(0, Number(r.total_amount) - (paymentByReservation.get(r.id) ?? 0)), 0);
+  const occupiedNights = monthReservations.reduce((sum: number, r: Reservation) => {
+    const start = r.check_in > period.start ? r.check_in : period.start;
+    const end = r.check_out < period.next ? r.check_out : period.next;
+    return sum + Math.max(0, nights(start, end));
+  }, 0);
+  const occupancyRate = period.days ? Math.min(100, (occupiedNights / period.days) * 100) : 0;
+  const totalGuests = monthReservations.reduce((sum: number, r: Reservation) => sum + Number(r.guests || 0), 0);
+
+  function csvCell(value: unknown) {
+    const text = String(value ?? "").replace(/"/g, '""');
+    return `"${text}"`;
+  }
+  function saveCsv(filename: string, rows: unknown[][]) {
+    const csv = "\uFEFF" + rows.map(row => row.map(csvCell).join(";")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    notify("Relatório CSV baixado.");
+  }
+  function exportFinancial() {
+    const rows: unknown[][] = [
+      ["RELATÓRIO FINANCEIRO", property?.name ?? "Casa Porto"],
+      ["Período", period.label],
+      [],
+      ["RESUMO"],
+      ["Valor contratado (entradas no mês)", contracted],
+      ["Recebido no mês", received],
+      ["Despesas no mês", spent],
+      ["Resultado de caixa", received - spent],
+      ["Contas a pagar pendentes no mês", openPayablesAmount],
+      ["A receber das reservas com entrada no mês", pending],
+      [],
+      ["PAGAMENTOS"], ["Data", "Hóspede", "Forma", "Valor", "Observação"],
+      ...monthPayments.map((p: Payment) => { const r = reservations.find((x: Reservation) => x.id === p.reservation_id); return [p.paid_at, r?.guest_name ?? "Reserva", p.method, Number(p.amount), p.notes ?? ""]; }),
+      [], ["DESPESAS"], ["Data", "Categoria", "Descrição", "Valor"],
+      ...monthExpenses.map((e: Expense) => [e.spent_at, e.category, e.description, Number(e.amount)]),
+      [], ["CONTAS A PAGAR"], ["Vencimento", "Categoria", "Descrição", "Status", "Valor"],
+      ...monthPayables.map((p: Payable) => [p.due_date, p.category, p.description, p.status === "paid" ? "Paga" : "Pendente", Number(p.amount)]),
+      [], ["RESERVAS COM ENTRADA NO MÊS"], ["Hóspede", "Entrada", "Saída", "Diárias", "Valor", "Recebido", "Saldo", "Origem", "Status"],
+      ...arrivals.map((r: Reservation) => { const paid = paymentByReservation.get(r.id) ?? 0; return [r.guest_name, r.check_in, r.check_out, nights(r.check_in, r.check_out), Number(r.total_amount), paid, Math.max(0, Number(r.total_amount) - paid), r.source, statusLabel[r.status] ?? r.status]; })
+    ];
+    saveCsv(`financeiro-${month}.csv`, rows);
+  }
+  function exportOccupancy() {
+    const rows: unknown[][] = [
+      ["RELATÓRIO DE OCUPAÇÃO", property?.name ?? "Casa Porto"], ["Período", period.label], [],
+      ["Dias do mês", period.days], ["Noites ocupadas", occupiedNights], ["Taxa de ocupação", `${occupancyRate.toFixed(1)}%`], ["Reservas no período", monthReservations.length], ["Hóspedes previstos", totalGuests], [],
+      ["Hóspede", "Entrada", "Saída", "Noites no mês", "Hóspedes", "Origem", "Status"],
+      ...monthReservations.map((r: Reservation) => { const start = r.check_in > period.start ? r.check_in : period.start; const end = r.check_out < period.next ? r.check_out : period.next; return [r.guest_name, r.check_in, r.check_out, Math.max(0, nights(start, end)), r.guests, r.source, statusLabel[r.status] ?? r.status]; })
+    ];
+    saveCsv(`ocupacao-${month}.csv`, rows);
+  }
+  function printReport() {
+    const oldTitle = document.title;
+    document.title = `${reportKind === "financial" ? "Relatorio-Financeiro" : "Relatorio-Ocupacao"}-${month}`;
+    window.print();
+    setTimeout(() => { document.title = oldTitle; }, 300);
+  }
+
+  return <div className="reports-page">
+    <section className="card report-toolbar no-print">
+      <div><span className="eyebrow">PERÍODO DO RELATÓRIO</span><h2>Relatórios mensais</h2><p className="muted">Escolha o mês e gere o financeiro ou o relatório de ocupação/calendário.</p></div>
+      <div className="report-controls"><label>Mês<input type="month" value={month} onChange={e=>setMonth(e.target.value)} /></label><div className="report-toggle"><button className={reportKind==="financial"?"active":""} onClick={()=>setReportKind("financial")}><Wallet size={16}/> Financeiro</button><button className={reportKind==="occupancy"?"active":""} onClick={()=>setReportKind("occupancy")}><CalendarDays size={16}/> Ocupação</button></div></div>
+      <div className="report-actions"><button className="btn soft" onClick={reportKind==="financial"?exportFinancial:exportOccupancy}><Download size={16}/> Baixar CSV / Excel</button><button className="btn primary" onClick={printReport}><Printer size={16}/> PDF / Imprimir</button></div>
+    </section>
+
+    <section className="report-sheet">
+      <div className="report-header"><div><span className="eyebrow">CASA PORTO</span><h1>{reportKind==="financial"?"Relatório financeiro":"Relatório de ocupação"}</h1><p>{property?.name ?? "Casa Porto"} · <span className="capitalize">{period.label}</span></p></div><div className="report-badge">{month}</div></div>
+      {reportKind === "financial" ? <>
+        <div className="report-stats"><ReportMetric label="Contratado" value={money(contracted)} note="Reservas com entrada no mês"/><ReportMetric label="Recebido" value={money(received)} note="Pagamentos no período"/><ReportMetric label="Despesas" value={money(spent)} note="Gastos no período"/><ReportMetric label="Resultado" value={money(received-spent)} note="Recebido menos despesas"/><ReportMetric label="Contas a pagar" value={money(openPayablesAmount)} note="Vencimentos pendentes no mês"/><ReportMetric label="A receber" value={money(pending)} note="Saldo das entradas do mês"/></div>
+        <ReportTable title="Reservas com entrada no mês" headers={["Hóspede","Período","Diárias","Valor","Recebido","Saldo"]} empty="Nenhuma reserva com entrada neste mês." rows={arrivals.map((r:Reservation)=>{const paid=paymentByReservation.get(r.id)??0;return [r.guest_name,`${formatDate(r.check_in)} → ${formatDate(r.check_out)}`,nights(r.check_in,r.check_out),money(Number(r.total_amount)),money(paid),money(Math.max(0,Number(r.total_amount)-paid))]})}/>
+        <div className="report-columns"><ReportTable title="Pagamentos" headers={["Data","Hóspede","Forma","Valor"]} empty="Nenhum pagamento no mês." rows={monthPayments.map((p:Payment)=>{const r=reservations.find((x:Reservation)=>x.id===p.reservation_id);return [formatDate(p.paid_at),r?.guest_name??"Reserva",p.method,money(Number(p.amount))]})}/><ReportTable title="Despesas" headers={["Data","Categoria","Descrição","Valor"]} empty="Nenhuma despesa no mês." rows={monthExpenses.map((e:Expense)=>[formatDate(e.spent_at),e.category,e.description,money(Number(e.amount))])}/></div><ReportTable title="Contas a pagar" headers={["Vencimento","Categoria","Descrição","Status","Valor"]} empty="Nenhuma conta com vencimento no mês." rows={monthPayables.map((p:Payable)=>[formatDate(p.due_date),p.category,p.description,p.status==="paid"?"Paga":"Pendente",money(Number(p.amount))])}/>
+      </> : <>
+        <div className="report-stats"><ReportMetric label="Ocupação" value={`${occupancyRate.toFixed(1)}%`} note={`${occupiedNights} de ${period.days} noites`}/><ReportMetric label="Noites ocupadas" value={String(occupiedNights)} note="Dentro do mês selecionado"/><ReportMetric label="Reservas" value={String(monthReservations.length)} note="Com estadia no período"/><ReportMetric label="Hóspedes" value={String(totalGuests)} note="Somatório das reservas"/></div>
+        <div className="occupancy-bar"><div><span>Taxa de ocupação</span><strong>{occupancyRate.toFixed(1)}%</strong></div><div className="bar-track"><i style={{width:`${occupancyRate}%`}} /></div></div>
+        <ReportTable title="Calendário de hospedagens" headers={["Hóspede","Entrada","Saída","Noites no mês","Hóspedes","Origem","Status"]} empty="Nenhuma hospedagem neste mês." rows={monthReservations.map((r:Reservation)=>{const start=r.check_in>period.start?r.check_in:period.start;const end=r.check_out<period.next?r.check_out:period.next;return [r.guest_name,formatDate(r.check_in),formatDate(r.check_out),Math.max(0,nights(start,end)),r.guests,r.source,statusLabel[r.status]??r.status]})}/>
+      </>}
+      <div className="report-footer">Gerado em {new Intl.DateTimeFormat("pt-BR", { dateStyle: "long" }).format(new Date())} · Dados registrados no Casa Porto</div>
+    </section>
+  </div>;
+}
+
+function ReportMetric({ label, value, note }: { label: string; value: string; note: string }) { return <div className="report-metric"><span>{label}</span><strong>{value}</strong><small>{note}</small></div>; }
+function ReportTable({ title, headers, rows, empty }: { title: string; headers: string[]; rows: (string|number)[][]; empty: string }) { return <section className="report-table-block"><h3>{title}</h3><div className="table-wrap"><table className="report-table"><thead><tr>{headers.map(h=><th key={h}>{h}</th>)}</tr></thead><tbody>{rows.length?rows.map((row,i)=><tr key={i}>{row.map((cell,j)=><td key={j}>{cell}</td>)}</tr>):<tr><td colSpan={headers.length} className="report-empty">{empty}</td></tr>}</tbody></table></div></section>; }
 
 function TasksView({ tasks, reservations, householdId, onReload, onNew, notify }: any) {
   async function toggle(t:Task){await supabase.from("tasks").update({status:t.status==="done"?"open":"done"}).eq("id",t.id);await onReload();notify(t.status==="done"?"Tarefa reaberta.":"Tarefa concluída.")}
@@ -334,6 +522,21 @@ function ExpenseModal({ householdId, onClose, onDone }: any) {
   const [amount,setAmount]=useState(""); const [date,setDate]=useState(localISO()); const [category,setCategory]=useState("Limpeza"); const [description,setDescription]=useState(""); const [busy,setBusy]=useState(false);
   async function save(){setBusy(true);const {error}=await supabase.from("expenses").insert({household_id:householdId,amount:Number(amount.replace(",",".")),spent_at:date,category,description});setBusy(false);if(!error)onDone();}
   return <Modal title="Nova despesa" subtitle="Registre um gasto da casa" onClose={onClose}><div className="form-grid"><label>Valor<input type="number" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)}/></label><label>Data<input type="date" value={date} onChange={e=>setDate(e.target.value)}/></label><label>Categoria<select value={category} onChange={e=>setCategory(e.target.value)}>{["Limpeza","Manutenção","Energia","Água","Internet","Condomínio","Enxoval","Comissão","Outro"].map(x=><option key={x}>{x}</option>)}</select></label><label>Descrição<input value={description} onChange={e=>setDescription(e.target.value)} placeholder="Ex.: Limpeza pós-hospedagem"/></label></div><div className="modal-actions"><div className="push"></div><button className="btn soft" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={save} disabled={busy||!description||Number(amount)<=0}>Salvar despesa</button></div></Modal>;
+}
+
+function PayableModal({ householdId, onClose, onDone }: any) {
+  const [amount,setAmount]=useState("");
+  const [dueDate,setDueDate]=useState(localISO());
+  const [category,setCategory]=useState("Energia");
+  const [description,setDescription]=useState("");
+  const [busy,setBusy]=useState(false);
+  async function save(){
+    setBusy(true);
+    const {error}=await supabase.from("payables").insert({household_id:householdId,amount:Number(amount.replace(",",".")),due_date:dueDate,category,description,status:"open"});
+    setBusy(false);
+    if(!error)onDone();
+  }
+  return <Modal title="Nova conta a pagar" subtitle="Cadastre a despesa antes do vencimento" onClose={onClose}><div className="form-grid"><label>Valor<input type="number" min="0" step="0.01" value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0,00"/></label><label>Vencimento<input type="date" value={dueDate} onChange={e=>setDueDate(e.target.value)}/></label><label>Categoria<select value={category} onChange={e=>setCategory(e.target.value)}>{["Energia","Água","Internet","Condomínio","Limpeza","Manutenção","Enxoval","Comissão","Impostos","Outro"].map(x=><option key={x}>{x}</option>)}</select></label><label>Descrição<input value={description} onChange={e=>setDescription(e.target.value)} placeholder="Ex.: Conta de energia de setembro"/></label></div><div className="notice"><Clock3 size={16}/> Ao marcar como paga, o sistema registra automaticamente a despesa no financeiro.</div><div className="modal-actions"><div className="push"></div><button className="btn soft" onClick={onClose}>Cancelar</button><button className="btn primary" onClick={save} disabled={busy||!description||Number(amount)<=0}>{busy?"Salvando…":"Criar conta"}</button></div></Modal>;
 }
 
 function TaskModal({ householdId, reservations, onClose, onDone }: any) {
